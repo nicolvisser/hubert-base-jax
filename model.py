@@ -190,10 +190,9 @@ class TransformerEncoder(nn.Module):
         self,
         x: jnp.ndarray,
         mask: jnp.ndarray = None,
-        output_layer: Optional[int] = None,
         train: bool = True,
     ) -> jnp.ndarray:
-        for l in self.layers[:output_layer]:
+        for l in self.layers:
             x = l(x, mask=mask, train=train)
         return x
 
@@ -282,6 +281,7 @@ class FeatureMasking(nn.Module):
 
 class HuBERTEncoder(nn.Module):
     mask: bool = False
+    num_layers: int = 12  # only change this during inference
 
     def setup(self):
         self.feature_extractor = FeatureExtractor()
@@ -291,7 +291,7 @@ class HuBERTEncoder(nn.Module):
         self.norm = nn.LayerNorm(epsilon=1e-5)
         self.dropout = nn.Dropout(rate=0.1)
         self.encoder = TransformerEncoder(
-            num_layers=12,
+            num_layers=self.num_layers,
             input_dim=768,
             num_heads=12,
             dim_feedforward=3072,
@@ -314,7 +314,6 @@ class HuBERTEncoder(nn.Module):
         self,
         x: jnp.ndarray,
         unpadded_num_samples: jnp.array = None,
-        layer: Optional[int] = None,
         train: bool = True,
     ) -> jnp.ndarray:
         """
@@ -343,9 +342,7 @@ class HuBERTEncoder(nn.Module):
             if unpadded_num_samples is None
             else self.make_padding_mask(x.shape[1], unpadded_num_samples)
         )  # B T
-        x = self.encoder(
-            x, mask=padding_mask, output_layer=layer, train=train
-        )  # B T 768
+        x = self.encoder(x, mask=padding_mask, train=train)  # B T 768
         return x
 
 

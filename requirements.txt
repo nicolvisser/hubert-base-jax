@@ -1,1 +1,7 @@
 flax
+tqdm
+matplotlib
+ipykernel
+numpy
+tqdm
+click
