@@ -2,7 +2,7 @@
 
 An implementation of HuBERT Base in JAX. (I want to be able to train HuBERT efficiently on TPUs)
 
-This repository is a **work in progress** and is not yet complete.
+This repository is a **work in progress** and is not yet complete. Inference using pretrained weights is possible. Training is not yet implemented.
 
 To Do List:
 - [x] Build the model for inference
