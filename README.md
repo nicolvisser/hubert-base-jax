@@ -46,6 +46,7 @@ Note: If you want to compute the ABX score, I recommend installing and using `zr
 # Usage: Inference
 
 ```python
+import flax
 from model import HuBERTEncoder
 
 output_layer = 10
