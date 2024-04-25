@@ -207,86 +207,13 @@ class TransformerEncoder(nn.Module):
         return attention_maps
 
 
-def _make_feature_mask(
-    key: PRNGKey,
-    sequence_length: int,
-    mask_length: int,
-    num_masked_spans: int,
-) -> jnp.ndarray:
-    # get random start indices for masked spans
-    start_indices = jax.random.choice(
-        key, a=jnp.arange(sequence_length), shape=(num_masked_spans,), replace=False
-    )
-    # add the indices of the spans
-    mask_indices = (jnp.arange(mask_length)[None, :] + start_indices[:, None]).ravel()
-    # make the mask (True for masked indices, False for unmasked indices)
-    mask = jnp.zeros(sequence_length, dtype=jnp.bool_)
-    mask = mask.at[mask_indices].set(True)
-    return mask
-
-
-def _make_feature_mask_batch(
-    key: PRNGKey,
-    batch_size: int,
-    sequence_length: int,
-    mask_prob: float,
-    mask_length: int,
-) -> jnp.ndarray:
-    # compute number of masked spans
-    num_spans_key, key = jax.random.split(key, 2)
-    num_masked_spans = int(
-        mask_prob * sequence_length / mask_length
-        + jax.random.uniform(num_spans_key, shape=())
-    )
-    # make sure num masked indices <= sequence_length
-    if num_masked_spans * mask_length > sequence_length:
-        num_masked_spans = sequence_length // mask_length
-    # make the mask for each row
-    row_keys = jax.random.split(key, batch_size)
-    mask = jax.vmap(_make_feature_mask, in_axes=(0, None, None, None))(
-        row_keys, sequence_length, mask_length, num_masked_spans
-    )
-    return mask
-
-
-class FeatureMasking(nn.Module):
-    mask_prob: float = 0.8
-    mask_length: int = 10
-    rng_collection: str = "mask_rng"
-
-    def setup(self):
-        self.mask_embedding = self.param(
-            "mask_embedding",
-            nn.initializers.uniform(),
-            (768,),
-        )
-
-    @nn.compact
-    def __call__(
-        self,
-        x: jnp.ndarray,
-        train: Optional[bool] = True,
-        rng: Optional[PRNGKey] = None,
-    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-        if train:
-            B, T, D = x.shape
-            if rng is None:
-                rng = self.make_rng(self.rng_collection)
-            mask = _make_feature_mask_batch(
-                rng, B, T, self.mask_prob, self.mask_length
-            )  # B T
-            x = x.at[mask].set(self.mask_embedding)
-        return x
-
-
 class HuBERTEncoder(nn.Module):
-    mask: bool = False
+    mask_spans: bool = False  # whether to mask spans of features during training
     num_layers: int = 12  # only change this during inference
 
     def setup(self):
         self.feature_extractor = FeatureExtractor()
         self.feature_projection = FeatureProjection()
-        self.feature_masking = FeatureMasking(0.8, 10)
         self.positional_embedding = PositionalConvEmbedding()
         self.norm = nn.LayerNorm(epsilon=1e-5)
         self.dropout = nn.Dropout(rate=0.1)
@@ -297,126 +224,115 @@ class HuBERTEncoder(nn.Module):
             dim_feedforward=3072,
             dropout_prob=0.1,
         )
-
-    def make_padding_mask(
-        self, T: int, unpadded_num_samples: jnp.ndarray
-    ) -> jnp.ndarray:
-        arange_T = jnp.arange(T)[None, :]  # 1 T
-        unpadded_lengths = unpadded_num_samples // 320
-        unpadded_lengths = unpadded_lengths[:, None]  # B 1
-        mask = arange_T < unpadded_lengths  # B T
-        return mask
-
-    def make_span_mask() -> jnp.ndarray:
-        pass
+        self.mask_embedding = self.param(
+            "mask_embedding",
+            nn.initializers.uniform(),
+            (768,),
+        )
 
     def __call__(
         self,
         x: jnp.ndarray,
-        unpadded_num_samples: jnp.array = None,
+        feature_mask: jnp.ndarray = None,
+        padding_mask: jnp.ndarray = None,
         train: bool = True,
     ) -> jnp.ndarray:
-        """
-        Encodes the input waveform using the HuBERT model.
-
-        Args:
-            x (jnp.ndarray): The input sequence to be encoded. Shape: (B, 1, max_num_samples)
-            unpadded_num_samples (jnp.array, optional): The number of unpadded samples in each batch. Shape: (B,)
-            layer (int, optional): The layer index to extract the output from. If None, returns the final encoded representation. Default: None
-            train (bool, optional): Whether to apply dropout and use the training mode of the model. Default: True
-
-        Returns:
-            jnp.ndarray: The encoded representation of the input sequence. Shape: (B, T, 768) where T is approximately max_num_samples // 320
-
-        """
         x = jnp.pad(x, ((0, 0), (0, 0), ((400 - 320) // 2, (400 - 320) // 2)))  # B 1 t
         x = jnp.transpose(x, (0, 2, 1))  # B t 1
         x = self.feature_extractor(x)  # B T 512
         x = self.feature_projection(x, train=train)  # B T 768
-        x = self.feature_masking(x, train=train)  # B T 768
+        x = jnp.where(feature_mask[:, :, None], self.mask_embedding, x)  # B T 768
         x = self.positional_embedding(x)  # B T 768
         x = self.norm(x)  # B T 768
         x = self.dropout(x, deterministic=not train)  # B T 768
-        padding_mask = (
-            None
-            if unpadded_num_samples is None
-            else self.make_padding_mask(x.shape[1], unpadded_num_samples)
-        )  # B T
         x = self.encoder(x, mask=padding_mask, train=train)  # B T 768
         return x
 
 
-# def cosine_similarity(
-#     x1: jnp.ndarray, x2: jnp.ndarray, eps: float = 1e-8
-# ) -> jnp.ndarray:
-#     x1_normalized = x1 / jnp.clip(
-#         jnp.linalg.norm(x1, axis=-1, keepdims=True), a_min=eps
-#     )
-#     x2_normalized = x2 / jnp.clip(
-#         jnp.linalg.norm(x2, axis=-1, keepdims=True), a_min=eps
-#     )
-#     return jnp.sum(x1_normalized * x2_normalized, axis=-1)
+def cosine_similarity(
+    x1: jnp.ndarray, x2: jnp.ndarray, eps: float = 1e-8
+) -> jnp.ndarray:
+    x1_normalized = x1 / jnp.clip(
+        jnp.linalg.norm(x1, axis=-1, keepdims=True), a_min=eps
+    )
+    x2_normalized = x2 / jnp.clip(
+        jnp.linalg.norm(x2, axis=-1, keepdims=True), a_min=eps
+    )
+    return jnp.sum(x1_normalized * x2_normalized, axis=-1)
 
 
-# class HuBERTPredictor(nn.Module):
-#     num_label_embeddings: int = 504
+class HuBERTForTraining(nn.Module):
+    num_label_embeddings: int = 504  # number of target labels
 
-#     def setup(self):
-#         self.hubert_encoder = HuBERTEncoder(mask=True)
-#         self.proj = nn.Dense(256)
-#         self.label_embeddings = self.param(
-#             "label_embeddings",
-#             nn.initializers.normal(1),
-#             (self.num_label_embeddings, 256),
-#         )
+    def setup(self):
+        self.hubert_encoder = HuBERTEncoder(mask_spans=True)
+        self.proj = nn.Dense(256)
+        self.label_embeddings = self.param(
+            "label_embeddings",
+            nn.initializers.normal(1),
+            (self.num_label_embeddings, 256),
+        )
 
-#     def logits(self, x: jnp.ndarray) -> jnp.ndarray:
-#         logits = cosine_similarity(
-#             x[:, :, None, :], self.label_embeddings[None, None, :, :]
-#         )
-#         return logits / 0.1
+    def logits(self, x: jnp.ndarray) -> jnp.ndarray:
+        logits = cosine_similarity(
+            x[:, :, None, :], self.label_embeddings[None, None, :, :]
+        )
+        return logits / 0.1
 
-#     def __call__(
-#         self, x: jnp.ndarray, padding_mask: jnp.ndarray = None, train: bool = True
-#     ) -> jnp.ndarray:
-#         x = self.hubert_encoder(x, padding_mask=padding_mask, train=train)  # B T 768
-#         x = self.proj(x)  # B T 256
-#         logits = self.logits(x)  # B T N
-#         return logits, None
+    def __call__(
+        self,
+        x: jnp.ndarray,
+        padding_mask: jnp.ndarray,
+        feature_mask: jnp.ndarray,
+        train: bool = True,
+    ) -> jnp.ndarray:
+        x = self.hubert_encoder(
+            x,
+            padding_mask=padding_mask,
+            feature_mask=feature_mask,
+            train=train,
+        )  # B T 768
+        x = self.proj(x)  # B T 256
+        logits = self.logits(x)  # B T N
+        return logits
+
+
+# util to create padding mask from waveform_lengths
+def make_padding_mask(T: int, waveform_lengths: jnp.ndarray) -> jnp.ndarray:
+    arange_T = jnp.arange(T)[None, :]  # 1 T
+    unpadded_lengths = waveform_lengths // 320  # B
+    unpadded_lengths = unpadded_lengths[:, None]  # B 1
+    mask = arange_T < unpadded_lengths  # B T
+    return mask
 
 
 if __name__ == "__main__":
     model = HuBERTEncoder()
 
-    # sample data
+    # sample train data
     x = jnp.zeros((2, 1, 16000))
-    unpadded_lengths = jnp.array([16000, 10000])
+    padding_mask = jnp.zeros([2, 16000 // 320], dtype=jnp.bool_)
+    feature_mask = jnp.zeros([2, 16000 // 320], dtype=jnp.bool_)
 
     # create rngs
     main_rng = jax.random.PRNGKey(0)
-    main_rng, init_rng, dropout_init_rng, mask_init_rng = jax.random.split(main_rng, 4)
+    main_rng, init_rng, dropout_init_rng = jax.random.split(main_rng, 3)
 
     params = model.init(
-        {"params": init_rng, "dropout": dropout_init_rng, "mask_rng": mask_init_rng},
+        {"params": init_rng, "dropout": dropout_init_rng},
         x,
         train=True,
     )["params"]
 
-    main_rng, dropout_apply_rng, mask_apply_rng = jax.random.split(main_rng, 3)
+    main_rng, dropout_apply_rng = jax.random.split(main_rng)
 
-    # if you don't bind the model, you can apply it like this
-    # y = model.apply(
-    #     {"params": params},
-    #     x,
-    #     unpadded_num_samples=unpadded_lengths,
-    #     rngs={"dropout": dropout_apply_rng, "mask_rng": mask_apply_rng},
-    # )
-
-    binded_mod = model.bind(
+    y = model.apply(
         {"params": params},
-        rngs={"dropout": dropout_apply_rng, "mask_rng": mask_apply_rng},
+        x,
+        padding_mask=padding_mask,
+        feature_mask=feature_mask,
+        rngs={"dropout": dropout_apply_rng},
+        train=True,
     )
-
-    y = binded_mod(x, unpadded_num_samples=unpadded_lengths, train=True)
 
     print(y.shape)

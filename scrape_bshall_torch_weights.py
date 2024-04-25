@@ -59,7 +59,7 @@ def scrape_bshall_torch_weights(checkpoint_path: Path):
     jax_params['positional_embedding.conv.layer_instance.kernel'] = torch_params["positional_embedding.conv.weight_v"].T
     jax_params['positional_embedding.conv.layer_instance.bias'] = torch_params["positional_embedding.conv.bias"]
     jax_params['positional_embedding.conv.layer_instance/kernel/scale'] = torch_params["positional_embedding.conv.weight_g"][0, 0, :]
-    jax_params['feature_masking.mask_embedding'] = torch_params['masked_spec_embed']
+    jax_params['mask_embedding'] = torch_params['masked_spec_embed']
     jax_params['norm.scale'] = torch_params["norm.weight"]
     jax_params['norm.bias'] = torch_params["norm.bias"]
     jax_params['proj.kernel'] = torch_params["proj.weight"].T

@@ -58,7 +58,7 @@ with open("checkpoints/hubert_bshall.bin", "rb") as f:
 
 @jax.jit
 def get_features(waveforms_padded):
-    features = model.apply({"params": params}, waveforms, train=False)
+    features, _ = model.apply({"params": params}, waveforms, train=False)
     return features
 
 for waveforms_padded in tqdm(dataloader):

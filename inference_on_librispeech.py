@@ -10,14 +10,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchaudio.datasets import LIBRISPEECH
 from tqdm import tqdm
 
-from model import HuBERTEncoder
-
-dataset = LIBRISPEECH(
-    root="/media/SSD/datasets",
-    url="dev-clean",
-    folder_in_archive="LibriSpeech",
-    download=False,
-)
+from model import HuBERTEncoder, make_padding_mask
 
 
 class SortedChunkedDataset(Dataset):
@@ -45,17 +38,13 @@ class SortedChunkedDataset(Dataset):
         return len(self.sorted_idxs)
 
 
-sort_key_fn = lambda item: item[0].shape[1]
-dataset = SortedChunkedDataset(dataset=dataset, num_chunks=4, sort_key_fn=sort_key_fn)
-
-
 def collate_fn(batch):
     batch, padded_lengths = zip(*batch)
     max_len = max(padded_lengths)
     B = len(batch)
     stems = [f"{s}-{c}-{u:04d}" for _, _, _, s, c, u in batch]
     waveforms = [jnp.array(w[0]) for w, *_ in batch]
-    unpadded_lengths = [len(w) for w in waveforms]
+    unpadded_lengths = jnp.array([len(w) for w in waveforms])
     waveforms_padded = jnp.zeros((B, max_len))
     for i, w in enumerate(waveforms):
         waveforms_padded = waveforms_padded.at[i, : len(w)].set(w)
@@ -63,26 +52,44 @@ def collate_fn(batch):
     return waveforms_padded, unpadded_lengths, stems
 
 
-dataloader = DataLoader(dataset, batch_size=8, shuffle=False, collate_fn=collate_fn)
+if __name__ == "__main__":
 
+    dataset = LIBRISPEECH(
+        root="/media/SSD/datasets",
+        url="dev-clean",
+        folder_in_archive="LibriSpeech",
+        download=False,
+    )
 
-with open("checkpoints/hubert_bshall.bin", "rb") as f:
-    params = flax.serialization.from_bytes(HuBERTEncoder, f.read())
+    sort_key_fn = lambda item: item[0].shape[1]
+    dataset = SortedChunkedDataset(
+        dataset=dataset, num_chunks=4, sort_key_fn=sort_key_fn
+    )
 
+    dataloader = DataLoader(dataset, batch_size=8, shuffle=False, collate_fn=collate_fn)
 
-for layer_idx in range(12):
-    model = HuBERTEncoder(num_layers=layer_idx + 1)
+    with open("checkpoints/hubert_bshall.bin", "rb") as f:
+        params = flax.serialization.from_bytes(HuBERTEncoder, f.read())
 
-    @jax.jit
-    def get_features_batch(waveforms):
-        features = model.apply({"params": params}, waveforms, train=False)
-        return features
+    for layer_idx in range(12):
+        model = HuBERTEncoder(num_layers=layer_idx + 1)
 
-    output_dir = f"output/layer_{layer_idx}"
-    os.makedirs(output_dir, exist_ok=True)
-    for waveforms_padded, unpadded_lengths, stems in tqdm(dataloader):
-        features = get_features_batch(waveforms_padded)
-        feature_lengths = [l // 320 for l in unpadded_lengths]
-        for f, l, s in zip(features, feature_lengths, stems):
-            output_path = os.path.join(output_dir, f"{s}.npy")
-            np.save(output_path, f[:l])
+        @jax.jit
+        def get_features_batch(waveforms, unpadded_lengths):
+            features = model.apply(
+                {"params": params}, waveforms, padding_mask, train=False
+            )
+            return features
+
+        output_dir = f"output/layer_{layer_idx}"
+        os.makedirs(output_dir, exist_ok=True)
+        for waveforms_padded, unpadded_lengths, stems in tqdm(dataloader):
+            padding_mask = make_padding_mask(
+                waveforms_padded.shape[1], unpadded_lengths
+            )
+            features = get_features_batch(waveforms_padded, padding_mask)
+            feature_lengths = [l // 320 for l in unpadded_lengths]
+            # save features
+            # for f, l, s in zip(features, feature_lengths, stems):
+            #     output_path = os.path.join(output_dir, f"{s}.npy")
+            #     np.save(output_path, f[:l])

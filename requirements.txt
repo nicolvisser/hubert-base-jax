@@ -5,3 +5,5 @@ ipykernel
 numpy
 tqdm
 click
+tensorboard
+soundfile
