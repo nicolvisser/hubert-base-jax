@@ -93,6 +93,8 @@ def scrape_bshall_torch_weights(checkpoint_path: Path):
 
     jax_params = unflatten_dict(jax_params)
 
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
     with open(checkpoint_path, "wb") as f:
         f.write(flax.serialization.to_bytes(jax_params))
         print(f"JAX params saved to {checkpoint_path}")
