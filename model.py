@@ -6,20 +6,23 @@ import jax.numpy as jnp
 from flax import linen as nn
 from flax.linen.initializers import xavier_uniform as xu
 from flax.typing import PRNGKey
+from numpy import dtype
 
 
 class FeatureExtractor(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
-        self.conv0 = nn.Conv(512, 10, 5, "VALID", use_bias=False, kernel_init=xu())
+        # fmt: off
+        self.conv0 = nn.Conv(512, 10, 5, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
         self.norm0 = nn.GroupNorm(512, epsilon=1e-5, use_bias=True)
-        self.conv1 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
-        self.conv2 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
-        self.conv3 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
-        self.conv4 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
-        self.conv5 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu())
-        self.conv6 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv1 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        self.conv2 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        self.conv3 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        self.conv4 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        self.conv5 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        self.conv6 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu(), dtype=self.dtype)
+        # fmt: on
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = self.conv0(x)
@@ -34,9 +37,11 @@ class FeatureExtractor(nn.Module):
 
 
 class FeatureProjection(nn.Module):
+    dtype: jnp.dtype = jnp.float32
+
     def setup(self):
-        self.norm = nn.LayerNorm(epsilon=1e-5)
-        self.projection = nn.Dense(768, use_bias=True)
+        self.norm = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
+        self.projection = nn.Dense(768, use_bias=True, dtype=self.dtype)
         self.dropout = nn.Dropout(rate=0.1)
 
     def __call__(self, x: jnp.ndarray, train: bool = True) -> jnp.ndarray:
@@ -47,17 +52,20 @@ class FeatureProjection(nn.Module):
 
 
 class PositionalConvEmbedding(nn.Module):
+    dtype: jnp.dtype = jnp.float32
+
     def setup(self):
         conv = nn.Conv(
-            768,
+            features=768,
             kernel_size=128,
             strides=1,
             padding=128 // 2,
             feature_group_count=16,
             use_bias=True,
             kernel_init=xu(),
+            dtype=self.dtype,
         )
-        self.conv = nn.WeightNorm(conv, feature_axes=0)
+        self.conv = nn.WeightNorm(conv, feature_axes=0, dtype=self.dtype)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = self.conv(x)
@@ -94,8 +102,9 @@ def expand_mask(mask):
 
 
 class MultiheadAttention(nn.Module):
-    embed_dim: int  # Output dimension
-    num_heads: int  # Number of parallel heads (h)
+    embed_dim: int
+    num_heads: int
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         assert (
@@ -105,11 +114,13 @@ class MultiheadAttention(nn.Module):
 
         self.qkv_proj = nn.Dense(
             3 * self.embed_dim,
+            dtype=self.dtype,
             kernel_init=nn.initializers.xavier_uniform(),
             bias_init=nn.initializers.zeros,
         )
         self.o_proj = nn.Dense(
             self.embed_dim,
+            dtype=self.dtype,
             kernel_init=nn.initializers.xavier_uniform(),
             bias_init=nn.initializers.zeros,
         )
@@ -138,19 +149,20 @@ class EncoderBlock(nn.Module):
     num_heads: int
     dim_feedforward: int
     dropout_prob: float
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.self_attn = MultiheadAttention(
-            embed_dim=self.input_dim, num_heads=self.num_heads
+            embed_dim=self.input_dim, num_heads=self.num_heads, dtype=self.dtype
         )
         self.linear = [
-            nn.Dense(self.dim_feedforward),
+            nn.Dense(self.dim_feedforward, dtype=self.dtype),
             nn.Dropout(self.dropout_prob),
             # nn.gelu is applied here
-            nn.Dense(self.input_dim),
+            nn.Dense(self.input_dim, dtype=self.dtype),
         ]
-        self.norm1 = nn.LayerNorm()
-        self.norm2 = nn.LayerNorm()
+        self.norm1 = nn.LayerNorm(dtype=self.dtype)
+        self.norm2 = nn.LayerNorm(dtype=self.dtype)
         self.dropout = nn.Dropout(self.dropout_prob)
 
     def __call__(
@@ -179,11 +191,16 @@ class TransformerEncoder(nn.Module):
     num_heads: int
     dim_feedforward: int
     dropout_prob: float
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
         self.layers = [
             EncoderBlock(
-                self.input_dim, self.num_heads, self.dim_feedforward, self.dropout_prob
+                self.input_dim,
+                self.num_heads,
+                self.dim_feedforward,
+                self.dropout_prob,
+                dtype=self.dtype,
             )
             for _ in range(self.num_layers)
         ]
@@ -210,13 +227,14 @@ class TransformerEncoder(nn.Module):
 
 
 class HuBERTEncoder(nn.Module):
-    num_layers: int = 12  # only change this during inference
+    num_layers: int = 12
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.feature_extractor = FeatureExtractor()
-        self.feature_projection = FeatureProjection()
-        self.positional_embedding = PositionalConvEmbedding()
-        self.norm = nn.LayerNorm(epsilon=1e-5)
+        self.feature_extractor = FeatureExtractor(dtype=self.dtype)
+        self.feature_projection = FeatureProjection(dtype=self.dtype)
+        self.positional_embedding = PositionalConvEmbedding(dtype=self.dtype)
+        self.norm = nn.LayerNorm(epsilon=1e-5, dtype=self.dtype)
         self.dropout = nn.Dropout(rate=0.1)
         self.encoder = TransformerEncoder(
             num_layers=self.num_layers,
@@ -224,6 +242,7 @@ class HuBERTEncoder(nn.Module):
             num_heads=12,
             dim_feedforward=3072,
             dropout_prob=0.1,
+            dtype=self.dtype,
         )
         self.mask_embedding = self.param(
             "mask_embedding",
@@ -265,10 +284,11 @@ def cosine_similarity(
 
 class HuBERTForTraining(nn.Module):
     num_label_embeddings: int = 504  # number of target labels
+    dtype: jnp.dtype = jnp.float32
 
     def setup(self):
-        self.hubert_encoder = HuBERTEncoder()
-        self.proj = nn.Dense(256)
+        self.hubert_encoder = HuBERTEncoder(dtype=self.dtype)
+        self.proj = nn.Dense(256, dtype=self.dtype)
         self.label_embeddings = self.param(
             "label_embeddings",
             nn.initializers.normal(1),
