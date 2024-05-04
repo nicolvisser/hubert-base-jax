@@ -240,7 +240,8 @@ class HuBERTEncoder(nn.Module):
         x = jnp.transpose(x, (0, 2, 1))  # B t 1
         x = self.feature_extractor(x)  # B T 512
         x = self.feature_projection(x, train=train)  # B T 768
-        x = jnp.where(feature_mask[:, :, None], self.mask_embedding, x)  # B T 768
+        if feature_mask is not None:
+            x = jnp.where(feature_mask[:, :, None], self.mask_embedding, x)  # B T 768
         x = self.positional_embedding(x)  # B T 768
         x = self.norm(x)  # B T 768
         x = self.dropout(x, deterministic=not train)  # B T 768
