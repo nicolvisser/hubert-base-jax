@@ -66,16 +66,17 @@ class PositionalConvEmbedding(nn.Module):
 
 
 def scaled_dot_product(
-    q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray = None
+    q: jnp.ndarray,  # B T Nh Dh
+    k: jnp.ndarray,  # B T Nh Dh
+    v: jnp.ndarray,  # B T Nh Dh
+    mask: jnp.ndarray = None,
+    softmax_dtype: jnp.dtype = jnp.float32,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    # q: B T Nh Dh
-    # k: B T Nh Dh
-    # v: B T Nh Dh
     attn_logits = jnp.einsum("...qhd,...khd->...hqk", q, k)  # B Nh T T
     attn_logits = attn_logits * (q.shape[-1] ** -0.5)  # B Nh T T
     if mask is not None:
         attn_logits = jnp.where(
-            mask == 0, jnp.finfo(attn_logits).min, attn_logits
+            mask == 0, jnp.finfo(softmax_dtype).min, attn_logits
         )  # B Nh T T
     attention = nn.softmax(attn_logits, axis=-1)  # B Nh T T
     values = jnp.einsum("...hqk,...khd->...qhd", attention, v)  # B T Nh Dh
