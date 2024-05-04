@@ -12,9 +12,7 @@ class FeatureExtractor(nn.Module):
     dtype: jnp.dtype = jnp.float32
 
     def setup(self) -> None:
-        self.conv0 = nn.Conv(
-            512, (10,), (5,), "VALID", use_bias=False, kernel_init=xu()
-        )
+        self.conv0 = nn.Conv(512, 10, 5, "VALID", use_bias=False, kernel_init=xu())
         self.norm0 = nn.GroupNorm(512, epsilon=1e-5, use_bias=True)
         self.conv1 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
         self.conv2 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
