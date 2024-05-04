@@ -68,13 +68,17 @@ class PositionalConvEmbedding(nn.Module):
 def scaled_dot_product(
     q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray = None
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    B, Nh, T, Dh = q.shape
-    attn_logits = jnp.matmul(q, jnp.swapaxes(k, -2, -1))  # B Nh T T
-    attn_logits = attn_logits / math.sqrt(Dh)  # B Bh T T
+    # q: B T Nh Dh
+    # k: B T Nh Dh
+    # v: B T Nh Dh
+    attn_logits = jnp.einsum("...qhd,...khd->...hqk", q, k)  # B Nh T T
+    attn_logits = attn_logits * (q.shape[-1] ** -0.5)  # B Nh T T
     if mask is not None:
-        attn_logits = jnp.where(mask == 0, -9e15, attn_logits)  # B Nh T T
+        attn_logits = jnp.where(
+            mask == 0, jnp.finfo(attn_logits).min, attn_logits
+        )  # B Nh T T
     attention = nn.softmax(attn_logits, axis=-1)  # B Nh T T
-    values = jnp.matmul(attention, v)  # B Nh T Dh
+    values = jnp.einsum("...hqk,...khd->...qhd", attention, v)  # B T Nh Dh
     return values, attention
 
 
@@ -117,14 +121,11 @@ class MultiheadAttention(nn.Module):
             mask = expand_mask(mask)
 
         qkv = self.qkv_proj(x)  # B T 3D
-        qkv = qkv.reshape(B, T, 3, D)
-        qkv = qkv.reshape(B, T, 3, self.num_heads, self.head_dim)
-        qkv = qkv.transpose(2, 0, 3, 1, 4)  # 3 B Nh T Dh
+        qkv = qkv.reshape(B, T, 3, self.num_heads, self.head_dim)  # B T 3 Nh Dh
 
         values, attention = scaled_dot_product(
-            qkv[0], qkv[1], qkv[2], mask=mask
-        )  # (B Nh T Dh), (B Nh T T)
-        values = values.transpose(0, 2, 1, 3)  # B T Nh Dh
+            qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2], mask=mask
+        )  # (B T Nh Dh), (B Nh T T)
         values = values.reshape(B, T, D)
         o = self.o_proj(values)  # B T D
 

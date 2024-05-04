@@ -37,7 +37,7 @@ model = HuBERTEncoder(num_layers=12)
 features1 = model.apply({"params": params}, wav1, padding_mask=None, train=False)
 if not jnp.allclose(features1, expected_features1, rtol=1e-5, atol=1e-5):
     mse1 = jnp.mean((features1 - expected_features1) ** 2)
-    print(f"Mismatch for {wav1_input_path}: MSE = {mse1:.5f}")
+    print(f"Mismatch for {wav1_input_path}: MSE = {mse1:.8f}")
 else:
     print(f"Test passed for {wav1_input_path}")
 
@@ -45,7 +45,7 @@ else:
 features2 = model.apply({"params": params}, wav2, padding_mask=None, train=False)
 if not jnp.allclose(features2, expected_features2, rtol=1e-5, atol=1e-5):
     mse2 = jnp.mean((features2 - expected_features2) ** 2)
-    print(f"Mismatch for {wav2_input_path}: MSE = {mse2:.5f}")
+    print(f"Mismatch for {wav2_input_path}: MSE = {mse2:.8f}")
 else:
     print(f"Test passed for {wav2_input_path}")
 
@@ -65,6 +65,6 @@ features = model.apply({"params": params}, wavs, padding_mask=padding_mask, trai
 
 if not jnp.allclose(features, extected_features_batched, rtol=1e-5, atol=1e-5):
     mse_batched = jnp.mean((features - extected_features_batched) ** 2)
-    print(f"Mismatch for batched wavs: MSE = {mse_batched:.5f}")
+    print(f"Mismatch for batched wavs: MSE = {mse_batched:.8f}")
 else:
     print(f"Test passed for batched wavs")
