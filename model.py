@@ -9,17 +9,19 @@ from flax.typing import PRNGKey
 
 
 class FeatureExtractor(nn.Module):
+    dtype: jnp.dtype = jnp.float32
+
     def setup(self) -> None:
         self.conv0 = nn.Conv(
             512, (10,), (5,), "VALID", use_bias=False, kernel_init=xu()
         )
         self.norm0 = nn.GroupNorm(512, epsilon=1e-5, use_bias=True)
-        self.conv1 = nn.Conv(512, (3,), (2,), "VALID", use_bias=False, kernel_init=xu())
-        self.conv2 = nn.Conv(512, (3,), (2,), "VALID", use_bias=False, kernel_init=xu())
-        self.conv3 = nn.Conv(512, (3,), (2,), "VALID", use_bias=False, kernel_init=xu())
-        self.conv4 = nn.Conv(512, (3,), (2,), "VALID", use_bias=False, kernel_init=xu())
-        self.conv5 = nn.Conv(512, (2,), (2,), "VALID", use_bias=False, kernel_init=xu())
-        self.conv6 = nn.Conv(512, (2,), (2,), "VALID", use_bias=False, kernel_init=xu())
+        self.conv1 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv2 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv3 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv4 = nn.Conv(512, 3, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv5 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu())
+        self.conv6 = nn.Conv(512, 2, 2, "VALID", use_bias=False, kernel_init=xu())
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = self.conv0(x)
@@ -50,9 +52,9 @@ class PositionalConvEmbedding(nn.Module):
     def setup(self):
         conv = nn.Conv(
             768,
-            kernel_size=(128,),
-            strides=(1,),
-            padding=(128 // 2,),
+            kernel_size=128,
+            strides=1,
+            padding=128 // 2,
             feature_group_count=16,
             use_bias=True,
             kernel_init=xu(),
