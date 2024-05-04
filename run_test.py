@@ -68,5 +68,3 @@ if not jnp.allclose(features, extected_features_batched, rtol=1e-5, atol=1e-5):
     print(f"Mismatch for batched wavs: MSE = {mse_batched:.5f}")
 else:
     print(f"Test passed for batched wavs")
-
-print("All tests passed!")
