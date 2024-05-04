@@ -208,7 +208,6 @@ class TransformerEncoder(nn.Module):
 
 
 class HuBERTEncoder(nn.Module):
-    mask_spans: bool = False  # whether to mask spans of features during training
     num_layers: int = 12  # only change this during inference
 
     def setup(self):
@@ -265,7 +264,7 @@ class HuBERTForTraining(nn.Module):
     num_label_embeddings: int = 504  # number of target labels
 
     def setup(self):
-        self.hubert_encoder = HuBERTEncoder(mask_spans=True)
+        self.hubert_encoder = HuBERTEncoder()
         self.proj = nn.Dense(256)
         self.label_embeddings = self.param(
             "label_embeddings",
