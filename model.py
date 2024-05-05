@@ -320,8 +320,9 @@ class HuBERTForTraining(nn.Module):
 
 
 # util to create padding mask from waveform_lengths
-def make_padding_mask(T: int, waveform_lengths: jnp.ndarray) -> jnp.ndarray:
-    arange_T = jnp.arange(T)[None, :]  # 1 T
+def make_padding_mask(waveform_lengths: jnp.ndarray) -> jnp.ndarray:
+    max_waveform_length = jnp.max(waveform_lengths)
+    arange_T = jnp.arange(max_waveform_length // 320)[None, :]  # 1 T
     unpadded_lengths = waveform_lengths // 320  # B
     unpadded_lengths = unpadded_lengths[:, None]  # B 1
     mask = arange_T < unpadded_lengths  # B T

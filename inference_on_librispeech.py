@@ -84,9 +84,7 @@ if __name__ == "__main__":
         output_dir = f"output/layer_{layer_idx}"
         os.makedirs(output_dir, exist_ok=True)
         for waveforms_padded, unpadded_lengths, stems in tqdm(dataloader):
-            padding_mask = make_padding_mask(
-                waveforms_padded.shape[1], unpadded_lengths
-            )
+            padding_mask = make_padding_mask(unpadded_lengths)
             features = get_features_batch(waveforms_padded, padding_mask)
             feature_lengths = [l // 320 for l in unpadded_lengths]
             # save features
