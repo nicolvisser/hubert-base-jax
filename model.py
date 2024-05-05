@@ -84,7 +84,7 @@ def scaled_dot_product(
     attn_logits = attn_logits * (q.shape[-1] ** -0.5)  # B Nh T T
     if mask is not None:
         attn_logits = jnp.where(
-            mask == 0, jnp.finfo(softmax_dtype).min, attn_logits
+            mask, attn_logits, jnp.finfo(softmax_dtype).min
         )  # B Nh T T
     attention = nn.softmax(attn_logits, axis=-1)  # B Nh T T
     values = jnp.einsum("...hqk,...khd->...qhd", attention, v)  # B T Nh Dh
@@ -226,8 +226,13 @@ class TransformerEncoder(nn.Module):
         return attention_maps
 
 
+class FeatureMasking(nn.Module):
+    pass
+
+
 class HuBERTEncoder(nn.Module):
     num_layers: int = 12
+    masking: bool = False
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
