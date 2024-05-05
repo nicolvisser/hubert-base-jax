@@ -226,13 +226,8 @@ class TransformerEncoder(nn.Module):
         return attention_maps
 
 
-class FeatureMasking(nn.Module):
-    pass
-
-
 class HuBERTEncoder(nn.Module):
     num_layers: int = 12
-    masking: bool = False
     dtype: jnp.dtype = jnp.float32
 
     def setup(self):
