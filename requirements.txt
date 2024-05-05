@@ -6,4 +6,5 @@ numpy
 tqdm
 click
 tensorboard
+tensorboardX
 soundfile

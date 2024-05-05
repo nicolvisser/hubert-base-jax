@@ -8,7 +8,7 @@ import optax
 from flax.training import checkpoints
 from flax.training.train_state import TrainState
 from flax.typing import PRNGKey
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from dataset import Batch
@@ -26,9 +26,10 @@ class TrainerModule:
         checkpoint_dir: str = "./checkpoints",
         lr_peak_value: float = 5e-4,
         lr_end_value: float = 0,
-        warmup_steps=32000,  # 20k iter1, 32k iter2 (8% of total steps)
-        decay_steps=230000,  # 230k iter1, 368k iter2 (92% of total steps)
+        warmup_steps: int = 20000,  # 20k iter1, 32k iter2 (8% of total steps)
+        decay_steps: int = 230000,  # 230k iter1, 368k iter2 (92% of total steps)
         gradient_clip_value: float = 1.0,  # TODO: Confirm this value
+        dtype: jnp.dtype = jnp.float32,
     ):
 
         self.model_name = model_name
@@ -40,7 +41,9 @@ class TrainerModule:
         self.decay_steps = decay_steps
         self.gradient_clip_value = gradient_clip_value
 
-        self.model = HuBERTForTraining(num_label_embeddings=num_label_embeddings)
+        self.model = HuBERTForTraining(
+            num_label_embeddings=num_label_embeddings, dtype=dtype
+        )
 
         self.log_dir = self.checkpoint_dir / model_name
         self.logger = SummaryWriter(log_dir=self.log_dir)
@@ -197,22 +200,22 @@ class TrainerModule:
 
 
 if __name__ == "__main__":
-    import torch
-    from torch.utils.data import DataLoader
     import math
+
+    from torch.utils.data import DataLoader
 
     from dataset import TrainingDataset
 
     num_labels = 500
-    num_workers = 2
-    batch_size = 2
+    num_workers = 0
+    batch_size = 16
     warmup_steps = 32000
     decay_steps = 230000
     num_steps = warmup_steps + decay_steps  # 250000
 
-    dataset = TrainingDataset(
-        waveforms_dir="/media/SSD/datasets/LibriSpeech/dev-clean/1272",
-        labels_dir="/home/nicolvisser/repos/hubert-base-jax/data/mfcc-cluster-ids/dev-clean/1272",
+    train_dataset = TrainingDataset(
+        waveforms_dir="/media/SSD/datasets/LibriSpeech/dev-clean",
+        labels_dir="/home/nicolvisser/repos/hubert-base-jax/data/mfcc-cluster-ids/dev-clean",
         label_rate=100,
         num_unique_labels=num_labels,
         random_crop=True,
@@ -220,8 +223,24 @@ if __name__ == "__main__":
         min_sample_size=16000,
     )
 
+    valid_dataset = TrainingDataset(
+        waveforms_dir="/media/SSD/datasets/LibriSpeech/dev-clean",
+        labels_dir="/home/nicolvisser/repos/hubert-base-jax/data/mfcc-cluster-ids/dev-clean",
+        label_rate=100,
+        num_unique_labels=num_labels,
+        random_crop=False,
+        max_sample_size=256000,
+        min_sample_size=16000,
+    )
+
     example_batch = next(
-        iter(DataLoader(dataset, batch_size=batch_size, collate_fn=dataset.collate_fn))
+        iter(
+            DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                collate_fn=train_dataset.collate_fn,
+            )
+        )
     )
 
     trainer = TrainerModule(
@@ -238,22 +257,22 @@ if __name__ == "__main__":
     )
 
     train_loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=dataset.collate_fn,
+        collate_fn=train_dataset.collate_fn,
         drop_last=True,
         num_workers=num_workers,
     )
-    val_loader = DataLoader(
-        dataset,
+    valid_loader = DataLoader(
+        valid_dataset,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=dataset.collate_fn,
+        collate_fn=valid_dataset.collate_fn,
         drop_last=False,
         num_workers=num_workers,
     )
 
     num_epochs = math.ceil(num_steps / len(train_loader))
 
-    trainer.train_model(train_loader, val_loader, num_epochs=num_epochs)
+    trainer.train_model(train_loader, valid_loader, num_epochs=num_epochs)
