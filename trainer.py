@@ -3,19 +3,18 @@ from typing import Tuple
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
+import wandb
 from flax.training import checkpoints
 from flax.training.train_state import TrainState
 from flax.typing import PRNGKey
-from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 from dataset import Batch
 from model import HuBERTForTraining
 
 
-class TrainerModule:
+class HuBERTTrainer:
 
     def __init__(
         self,
@@ -24,10 +23,10 @@ class TrainerModule:
         num_label_embeddings: int,  # number of target labels
         seed: int = 42,
         checkpoint_dir: str = "./checkpoints",
-        lr_peak_value: float = 5e-4,
+        lr_peak_value: float = 5e-4,  # 5e-4
         lr_end_value: float = 0,
         warmup_steps: int = 20000,  # 20k iter1, 32k iter2 (8% of total steps)
-        decay_steps: int = 230000,  # 230k iter1, 368k iter2 (92% of total steps)
+        decay_steps: int = 250000,  # 250k iter1, 400k iter2 (total steps)
         gradient_clip_value: float = 1.0,  # TODO: Confirm this value
         dtype: jnp.dtype = jnp.float32,
     ):
@@ -46,40 +45,59 @@ class TrainerModule:
         )
 
         self.log_dir = self.checkpoint_dir / model_name
-        self.logger = SummaryWriter(log_dir=self.log_dir)
+        self.logger = wandb.init(
+            project="hubert-base-jax",
+            name=model_name,
+            dir=self.log_dir,
+        )
 
         self.create_functions()
         self.init_model(example_batch)
 
+    @property
+    def step(self):
+        return self.state.step.item()
+
     def get_loss_function(self):
         def calculate_loss(params: dict, rng: PRNGKey, batch: Batch, train: bool):
-            rng, dropout_apply_rng, mask_apply_rng = jax.random.split(rng, 3)
+            rng, dropout_apply_rng, masking_apply_rng = jax.random.split(rng, 3)
 
-            logits = self.model.apply(
+            rngs = (
+                {"dropout": dropout_apply_rng, "masking": masking_apply_rng}
+                if train
+                else {}
+            )
+
+            logits, mask = self.model.apply(
                 {"params": params},
                 x=batch.padded_waveforms,
                 padding_mask=batch.padding_mask,
-                feature_mask=batch.feature_mask,
                 train=train,
-                rngs={"dropout": dropout_apply_rng, "mask_rng": mask_apply_rng},
+                rngs=rngs,
             )
 
+            if train:
+                # use both padding mask and features mask
+                loss_mask = jnp.logical_and(jnp.logical_not(batch.padding_mask), mask)
+            else:
+                # only use padding mask
+                loss_mask = jnp.logical_not(batch.padding_mask)
+
+            num_loss_entries = jnp.sum(loss_mask)
+
+            # calculate masked loss
             losses = optax.softmax_cross_entropy_with_integer_labels(
-                logits=logits,
-                labels=batch.padded_labels,
+                logits, batch.padded_labels
             )
-            correct = logits.argmax(axis=-1) == batch.padded_labels
+            losses = jnp.where(loss_mask, losses, 0.0)
+            loss = jnp.sum(losses) / num_loss_entries
 
-            num_masked_entries = jnp.sum(batch.feature_mask)
+            # calculate masked accuracy
+            correct_pred = jnp.equal(jnp.argmax(logits, axis=-1), batch.padded_labels)
+            correct_pred = jnp.where(loss_mask, correct_pred, False)
+            accuracy = jnp.sum(correct_pred) / num_loss_entries
 
-            masked_loss = (
-                jnp.where(batch.feature_mask, losses, 0).sum() / num_masked_entries
-            )
-            masked_accuracy = (
-                jnp.where(batch.feature_mask, correct, 0).sum() / num_masked_entries
-            )
-
-            return masked_loss, (masked_accuracy, rng)
+            return loss, (accuracy, rng)
 
         return calculate_loss
 
@@ -109,7 +127,7 @@ class TrainerModule:
     def init_model(self, example_batch: Batch):
         self.rng = jax.random.PRNGKey(self.seed)
 
-        self.rng, init_rng, dropout_init_rng, mask_init_rng = jax.random.split(
+        self.rng, init_rng, dropout_init_rng, masking_init_rng = jax.random.split(
             self.rng, 4
         )
 
@@ -117,15 +135,14 @@ class TrainerModule:
             {
                 "params": init_rng,
                 "dropout": dropout_init_rng,
-                "mask_rng": mask_init_rng,
+                "masking": masking_init_rng,
             },
             x=example_batch.padded_waveforms,
             padding_mask=example_batch.padding_mask,
-            feature_mask=example_batch.feature_mask,
             train=True,
         )["params"]
 
-        lr_schedule = optax.warmup_cosine_decay_schedule(
+        self.lr_schedule = optax.warmup_cosine_decay_schedule(
             init_value=0.0,
             peak_value=self.lr_peak_value,
             warmup_steps=self.warmup_steps,
@@ -136,7 +153,7 @@ class TrainerModule:
         optimizer = optax.chain(
             optax.clip_by_global_norm(self.gradient_clip_value),
             optax.adamw(
-                learning_rate=lr_schedule,
+                learning_rate=self.lr_schedule,
                 b1=0.9,
                 b2=0.98,
                 eps=1e-06,
@@ -149,130 +166,48 @@ class TrainerModule:
         )
 
     def train_model(self, train_loader, val_loader, num_epochs):
-        best_val_loss = float("inf")
+        best_val_accuracy = 0.0
         for epoch_idx in tqdm(range(1, num_epochs + 1)):
             self.train_epoch(train_loader, epoch=epoch_idx)
             if epoch_idx % 1 == 0:  # validate every 1 epoch
-                val_loss = self.eval_model(val_loader)
-                self.logger.add_scalar("val/loss", val_loss, global_step=epoch_idx)
-                if val_loss <= best_val_loss:
-                    best_val_loss = val_loss
-                    self.save_model(step=epoch_idx)
-                self.logger.flush()
+                val_accuracy = self.eval_model(val_loader)
+                wandb.log(
+                    {"val/accuracy": val_accuracy},
+                    step=self.step,
+                )
+                if val_accuracy >= best_val_accuracy:
+                    best_val_accuracy = val_accuracy
+                    checkpoints.save_checkpoint(
+                        ckpt_dir=self.log_dir, target=self.state.params, step=self.step
+                    )
 
     def train_epoch(self, train_loader, epoch):
-        losses, accuracies = [], []
         with tqdm(total=len(train_loader), desc="Training", leave=False) as pbar:
-            for batch in train_loader:
+            for i, batch in enumerate(train_loader):
                 self.state, self.rng, loss, accuracy = self.train_step(
                     self.state, self.rng, batch
                 )
-                losses.append(loss)
-                accuracies.append(accuracy)
+                if i % 1 == 0:  # log every 1 steps
+                    wandb.log(
+                        {
+                            "epoch": epoch,
+                            "trainer/global_step": self.step,
+                            "train/loss": loss,
+                            "train/accuracy": accuracy,
+                            "scheduler/lr": self.lr_schedule(self.step),
+                        },
+                        step=self.step,
+                    )
                 pbar.update(1)
-                pbar.set_postfix(
-                    loss=np.mean(jax.device_get(losses)),
-                    accuracy=np.mean(jax.device_get(accuracies)),
-                )
-
-        avg_loss = np.stack(jax.device_get(losses)).mean()
-        avg_accuracy = np.stack(jax.device_get(accuracies)).mean()
-        self.logger.add_scalar("train/loss", avg_loss, global_step=epoch)
-        self.logger.add_scalar("train/accuracy", avg_accuracy, global_step=epoch)
 
     def eval_model(self, data_loader):
-        total_loss, count = 0, 0
-        for batch in data_loader:
-            batch: Batch = batch  # for type hinting
-            loss, self.rng = self.eval_step(self.state, self.rng, batch)
-            total_loss += loss * batch.batch_size()
-            count += batch.batch_size()
-        eval_loss = (total_loss / count).item()
-        return eval_loss
-
-    def save_model(self, step=0):
-        # Save current model at certain training iteration
-        checkpoints.save_checkpoint(
-            ckpt_dir=self.log_dir, target=self.state.params, step=step
-        )
-
-    # TODO: load model
-
-
-if __name__ == "__main__":
-    import math
-
-    from torch.utils.data import DataLoader
-
-    from dataset import TrainingDataset
-
-    num_labels = 500
-    num_workers = 0
-    batch_size = 16
-    warmup_steps = 32000
-    decay_steps = 230000
-    num_steps = warmup_steps + decay_steps  # 250000
-
-    train_dataset = TrainingDataset(
-        waveforms_dir="/media/SSD/datasets/LibriSpeech/dev-clean",
-        labels_dir="/home/nicolvisser/repos/hubert-base-jax/data/mfcc-cluster-ids/dev-clean",
-        label_rate=100,
-        num_unique_labels=num_labels,
-        random_crop=True,
-        max_sample_size=256000,
-        min_sample_size=16000,
-    )
-
-    valid_dataset = TrainingDataset(
-        waveforms_dir="/media/SSD/datasets/LibriSpeech/dev-clean",
-        labels_dir="/home/nicolvisser/repos/hubert-base-jax/data/mfcc-cluster-ids/dev-clean",
-        label_rate=100,
-        num_unique_labels=num_labels,
-        random_crop=False,
-        max_sample_size=256000,
-        min_sample_size=16000,
-    )
-
-    example_batch = next(
-        iter(
-            DataLoader(
-                train_dataset,
-                batch_size=batch_size,
-                collate_fn=train_dataset.collate_fn,
-            )
-        )
-    )
-
-    trainer = TrainerModule(
-        model_name="hubert-base",
-        example_batch=example_batch,
-        num_label_embeddings=num_labels,
-        seed=42,
-        checkpoint_dir="./checkpoints",
-        lr_peak_value=5e-4,
-        lr_end_value=0,
-        warmup_steps=32000,
-        decay_steps=230000,
-        gradient_clip_value=1.0,
-    )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=train_dataset.collate_fn,
-        drop_last=True,
-        num_workers=num_workers,
-    )
-    valid_loader = DataLoader(
-        valid_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        collate_fn=valid_dataset.collate_fn,
-        drop_last=False,
-        num_workers=num_workers,
-    )
-
-    num_epochs = math.ceil(num_steps / len(train_loader))
-
-    trainer.train_model(train_loader, valid_loader, num_epochs=num_epochs)
+        total_accuracy, count = 0, 0
+        with tqdm(total=len(data_loader), desc="Validating", leave=False) as pbar:
+            for batch in data_loader:
+                batch: Batch = batch  # for type hinting
+                accuracy, self.rng = self.eval_step(self.state, self.rng, batch)
+                total_accuracy += accuracy * batch.batch_size
+                count += batch.batch_size
+                pbar.update(1)
+        eval_accuracy = (total_accuracy / count).item()
+        return eval_accuracy

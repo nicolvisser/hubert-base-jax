@@ -1,8 +1,8 @@
 # HuBERT Base JAX Implementation
 
-An implementation of HuBERT Base in JAX. (I want to be able to train HuBERT efficiently on TPUs)
+An implementation of HuBERT Base in JAX. (I want to be able to pretrain and finetune HuBERT efficiently on TPUs)
 
-This repository is a **work in progress** and is not yet complete. Inference using pretrained weights is possible. Training is not yet implemented.
+This repository is a **work in progress** and is not yet complete.
 
 To Do List:
 - [x] Build the model for inference
@@ -10,11 +10,13 @@ To Do List:
 - [x] Add padding mask
 - [x] Test pretrained model ABX on LibriSpeech
 - [x] Add masking strategy
-- [ ] Build dataset prepare scripts and loader
-- [ ] Build trainer module
-- [ ] Double check the cosine similarity with label embeddings
-- [ ] Test warm start training on LibriSpeech dataset
-- [ ] Test pretraining on LibriSpeech dataset
+- [x] Build dataset prepare scripts and loader
+- [x] Build trainer module
+- [x] Test pretraining on LibriSpeech dataset (single GPU)
+- [ ] Add LoRA
+- [ ] Test LoRA finetuning for phoneme recognition
+- [ ] Extend training to multiple TPUs with data parallelism
+- [ ] Clean up code and add documentation
 
 This repository is based on the following work:
 - Benji van Niekerk's stripped down [implementation](https://github.com/bshall/hubert) of HuBERT Base and easily accessible [weights](https://github.com/bshall/hubert/releases/tag/v0.2).
@@ -42,34 +44,6 @@ pip install -r requirements.txt
 ```
 
 Note: If you want to compute the ABX score, I recommend installing and using `zrc_abx2` in a separate environment.
-
-# Usage: Inference
-
-```python
-import flax
-from model import HuBERTEncoder
-
-output_layer = 10
-
-model = HuBERTEncoder(num_layers=output_layer)
-
-with open("checkpoints/hubert_bshall.bin", "rb") as f:
-    params = flax.serialization.from_bytes(HuBERTEncoder, f.read())
-
-@jax.jit
-def get_features(waveforms_padded):
-    features, _ = model.apply({"params": params}, waveforms, train=False)
-    return features
-
-for waveforms_padded in tqdm(dataloader):
-    features = get_features(waveforms_padded)
-    # save features here
-
-```
-
-# Usage: Training
-
-Coming soon...
 
 # Results
 

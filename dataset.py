@@ -1,22 +1,23 @@
 import random
 from pathlib import Path
 
-import chex
+import jax
+import jax.numpy as jnp
 import numpy as np
 import soundfile as sf
+from flax.struct import dataclass
 from torch.utils.data import Dataset
 
-from masking import compute_mask_indices
 
-
-class TrainingDataset(Dataset):
+class WaveformsAndLabelsDataset(Dataset):
     def __init__(
         self,
         waveforms_dir: str,
+        waveforms_match_pattern: str,
         labels_dir: str,
+        labels_match_pattern: str,
         label_rate: int,
         num_unique_labels: int,
-        waveforms_extension: str = ".flac",
         random_crop: bool = True,
         max_sample_size=256000,
         min_sample_size=32000,
@@ -33,31 +34,33 @@ class TrainingDataset(Dataset):
         assert self.max_sample_size % 320 == 0
         assert self.min_sample_size % 320 == 0
 
-        waveforms_paths = {
-            p.stem: p for p in Path(waveforms_dir).rglob(f"*{waveforms_extension}")
+        self.waveforms_paths = {
+            p.stem: p for p in Path(waveforms_dir).glob(waveforms_match_pattern)
         }
-        labels_paths = {p.stem: p for p in Path(labels_dir).rglob("*.npy")}
+        self.labels_paths = {
+            p.stem: p for p in Path(labels_dir).glob(labels_match_pattern)
+        }
 
-        print(f"Found {len(waveforms_paths)} waveform files")
-        print(f"Found {len(labels_paths)} label files")
+        print(f"Found {len(self.waveforms_paths)} waveform files")
+        print(f"Found {len(self.labels_paths)} label files")
 
-        common_stems = set(waveforms_paths.keys()) & set(labels_paths.keys())
+        self.common_stems = sorted(
+            list(set(self.waveforms_paths.keys()) & set(self.labels_paths.keys()))
+        )
 
-        print(f"Found {len(common_stems)} common stems")
-        assert len(common_stems) > 0
-
-        self.waveforms_paths = [waveforms_paths[stem] for stem in common_stems]
-        self.labels_paths = [labels_paths[stem] for stem in common_stems]
+        print(f"Found {len(self.common_stems)} common stems")
+        assert len(self.common_stems) > 0
 
         assert label_rate == 50 or label_rate == 100
         self.downsample_labels = True if label_rate == 100 else False
 
     def __len__(self) -> int:
-        return len(self.waveforms_paths)
+        return len(self.common_stems)
 
     def __getitem__(self, idx: int):
-        waveform_path = self.waveforms_paths[idx]
-        label_path = self.labels_paths[idx]
+        stem = self.common_stems[idx]
+        waveform_path = self.waveforms_paths[stem]
+        label_path = self.labels_paths[stem]
 
         waveform, sr = sf.read(waveform_path)
         labels = np.load(label_path)
@@ -141,32 +144,23 @@ class TrainingDataset(Dataset):
             padding_mask,
         ) = zip(*batch)
 
-        padded_waveforms = np.stack(padded_waveforms)  # B, t
-        padded_labels = np.stack(padded_labels)  # B, T
-        padding_mask = np.stack(padding_mask)  # B, T
-
-        feature_mask = compute_mask_indices(
-            shape=padded_labels.shape,
-            padding_mask=padding_mask,
-            mask_prob=0.65,
-            mask_length=10,
-            min_masks=2,
-        )
+        padded_waveforms = jnp.stack(padded_waveforms)  # B, t
+        padded_labels = jnp.stack(padded_labels)  # B, T
+        padding_mask = jnp.stack(padding_mask)  # B, T
 
         return Batch(
-            padded_waveforms=np.array(padded_waveforms)[:, None, :],  # B, 1, t
+            padded_waveforms=np.array(padded_waveforms),  # B, t
             padded_labels=np.array(padded_labels),  # B, T
             padding_mask=np.array(padding_mask),  # B, T
-            feature_mask=np.array(feature_mask),  # B, T
         )
 
 
-@chex.dataclass
+@dataclass
 class Batch:
-    padded_waveforms: np.ndarray
-    padded_labels: np.ndarray
-    padding_mask: np.ndarray
-    feature_mask: np.ndarray
+    padded_waveforms: jax.Array
+    padded_labels: jax.Array
+    padding_mask: jax.Array
 
+    @property
     def batch_size(self):
         return self.padded_waveforms.shape[0]
