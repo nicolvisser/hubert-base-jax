@@ -23,11 +23,11 @@ with open(checkpoint_path, "rb") as f:
 
 wav1, sr = sf.read(wav1_input_path)
 wav1 = jnp.array(wav1)
-wav1 = wav1[None, None, :]
+wav1 = wav1[None, :]
 
 wav2, sr = sf.read(wav2_input_path)
 wav2 = jnp.array(wav2)
-wav2 = wav2[None, None, :]
+wav2 = wav2[None, :]
 
 expected_features1 = jnp.load(features1_output_path)
 expected_features2 = jnp.load(features2_output_path)
@@ -36,7 +36,7 @@ extected_features_batched = jnp.load(features_batched_output_path)
 model = HuBERTEncoder(num_layers=12)
 
 # Test unbatched - wav1
-features1 = model.apply({"params": params}, wav1, padding_mask=None, train=False)
+features1, _ = model.apply({"params": params}, wav1, padding_mask=None, train=False)
 if OVERWRITE_EXPECTED:
     jnp.save(features1_output_path, features1)
 else:
@@ -47,7 +47,7 @@ else:
         print(f"Test passed for {wav1_input_path}")
 
 # Test unbatched - wav2
-features2 = model.apply({"params": params}, wav2, padding_mask=None, train=False)
+features2, _ = model.apply({"params": params}, wav2, padding_mask=None, train=False)
 if OVERWRITE_EXPECTED:
     jnp.save(features2_output_path, features2)
 else:
@@ -62,12 +62,14 @@ wav1_num_samples = wav1.shape[-1]
 wav2_num_samples = wav2.shape[-1]
 lengths_samples = jnp.array([wav1_num_samples, wav2_num_samples])
 max_num_samples = jnp.max(lengths_samples)
-wav1 = jnp.pad(wav1, ((0, 0), (0, 0), (0, max_num_samples - wav1_num_samples)))
-wav2 = jnp.pad(wav2, ((0, 0), (0, 0), (0, max_num_samples - wav2_num_samples)))
+wav1 = jnp.pad(wav1, ((0, 0), (0, max_num_samples - wav1_num_samples)))
+wav2 = jnp.pad(wav2, ((0, 0), (0, max_num_samples - wav2_num_samples)))
 wavs = jnp.concatenate([wav1, wav2], axis=0)
 padding_mask = make_padding_mask(lengths_samples)
 
-features = model.apply({"params": params}, wavs, padding_mask=padding_mask, train=False)
+features, _ = model.apply(
+    {"params": params}, wavs, padding_mask=padding_mask, train=False
+)
 if OVERWRITE_EXPECTED:
     jnp.save(features_batched_output_path, features)
 else:
